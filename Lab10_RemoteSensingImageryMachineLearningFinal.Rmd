@@ -1,0 +1,363 @@
+---
+title: 'Lab 10: Remote Sensing Machine Learning approaches in R'
+author: "Kyle Monahan"
+output: pdf_document
+---
+
+## Introduction 
+
+In this section of the course, we will be cover approaches to machine learning using remote sensing data. **Remote sensing** can be defined as the science of obtaining information about a place from a distance, commonly from unmanned autonomous vehicles (drones), aircraft or satellites.
+
+These data can be important for emergency response, where immediate data is needed over a wide area, and for a wide range of topics. 
+
+
+![AirborneImage](Figures/1_AOP-remotesensing-banner.jpg)
+
+**Figure 1.** The NEON observational platform is an example of a remote sensing operation, based on a fixed wing airplane. 
+
+![SentinelImage](Figures/2_Sentinel-2_pillars.jpg)
+
+**Figure 2.**  Another type of remotely sensed data is data sourced from orbit. This is the European Space Agency's Sentinel 2 platform.  
+
+Both of these platforms are collecting the energy reflected from objects across the electromagnetic spectrum in order to "sense" those objects remotely. 
+
+### Our data 
+
+In this walk through, we will be working with Sentinel-2 imagery. Remotely sensed data normally is made up of **bands** of data, as layers in a single image. These bands are sections of intensity within a certain range of wavelengths. 
+
+#### Example of bands
+
+For example, a single digital image can be composed of red, green and blue color bands. For example: 
+
+
+![RasterExample](Figures/3_RGB_Stack.jpg)
+
+**Figure 3.** The three layers that make up a RGB color image. Copyright NEON 2020. 
+
+
+### Bands in Sentinel  imagery
+
+In our case, Sentinel imagery is called **multi-spectral** as it detects 13 separate bands. There are referred to as Band 1, Band 2, Band 3, and so on until Band 12. There are two Band 8A.
+
+Each of these bands covers a different section of the electromagnetic spectrum, and can be used for different purposes. They are commonly combined into a band combination to detect specific objects or features. 
+
+>>> BREAKOUT GROUPS: Find one potential of a combination of bands in the Sentinel imagery. Go to the link below and read through the bands. Propose a potential research question based on one of the bands combinations. 
+
+https://gisgeography.com/sentinel-2-bands-combinations/
+
+>>> DEMO: We can see the common reflectance of objects using by referring to literature or an example database. I will show this to you. 
+
+https://landsat.usgs.gov/spectral-characteristics-viewer
+
+## Loading the remote sensing data
+
+We will follow a tutorial for Sentinel 2 imagery developed by Dr. Abdi. Citation is below, along with a nice approach for clearing our RAM, or memory. We will be using all 8 GB in this lecture.
+
+
+```{r}
+#####################################################################################################
+# title         : Machine learning exercise for Sentinel-2 data
+# purpose       : Implementing a machine learning workflow in R 
+# author        : Abdulhakim M. Abdi (Twitter: @HakimAbdi / www.hakimabdi.com)
+# input         : A multi-temporal raster stack of Sentinel-2 data comprising scenes from four dates 
+# output        : One classified land cover map from each of three machine learning algorithms  
+# Note 1        : This brief tutorial assumes that you are already well-grounded in R concepts and are 
+#               : familiar with image classification procedure and terminology
+# Reference		  : Please cite Abdi (2020): "Land cover and land use classification performance of machine learning 
+#				        : algorithms in a boreal landscape using Sentinel-2 data" in GIScience & Remote Sensing if you find this 
+#               : tutorial useful in a publication. 
+# Reference URL	: https://doi.org/10.1080/15481603.2019.1650447
+# Data for Code : http://bit.ly/downloadMLtutorialdata 
+#####################################################################################################
+
+rm(list = ls(all.names = TRUE)) # will clear all objects, including hidden objects
+gc() # free up memory and report memory usage
+
+```
+
+
+### Install GDAL 
+
+For Windows and MacOS users, you will need to install GDAL. For this class, we will use the TTS Virtual Lab virtual image, but I want to mention this step as it would be necessary to work on your own machines. GDAL is the geodata abstraction library, and is what much of the geodata libraries are built on.
+
+### Install libraries 
+
+```{r}
+# List of all packages 
+load.lib<-c("tidyverse", "rgdal", "raster","caret","sp",
+"nnet","randomForest","kernlab","e1071")
+
+# tidyverse - a collection of packages
+# rgdal - the R GeoData Abstraction Layer (GDAL) - 
+
+# Loop through the packages, check if not installed, if true, install with dependencies. 
+
+install.lib<-load.lib[!load.lib %in% installed.packages()]
+for(lib in install.lib) install.packages(lib,dependencies=TRUE)
+sapply(load.lib,require,character=TRUE)
+```
+
+### Load the data
+
+We will load the raster data to get started. 
+
+#### Working directory 
+
+First set your working directory. Session > Set Working Directory > To Source File Location. 
+
+**Note: I am deviating from the tutorial a bit, and adding material, just FYI**
+
+Now we can load the data using the `raster` package and the `stack` method to load all of the layers. 
+
+```{r}
+# Load the Sentinel-2 stack of the study area, from the raster library
+s2data = raster::stack("Data/S2StackSmall.tif")
+
+# Name the layers of the Sentinel-2 stack based on previously saved information
+names(s2data) = as.character(read.csv("Data/S2StackSmall_Names.csv")[,1])
+
+```
+
+>>> BREAKOUT: Look at the object s2data by clicking on it under the Environment. What is inside?
+
+### Look at the data 
+
+These are bands of data directly from Sentinel, just cropped to an area of interest. This is focusing on a particular area of Sweden as an example, but you could choose anywhere. 
+
+### Prediction goal
+
+We select Sweden as we have data for **land cover**, and we would like to use Sentinel data to predict land cover. 
+
+See metadata here:
+
+http://www.swedishepa.se/State-of-the-environment/Maps-and-map-services/National-Land-Cover-Database/
+
+
+Let's take a look at one of the Sentinel bands.
+
+
+```{r}
+# We can pass the s2data to plot, I will select the Band 2 data. 
+
+plot(s2data$B02M)
+
+```
+
+
+### Split the data into test and train 
+
+For this approach, we are looking to take all the bands in Sentinel data as inputs, and produce a model. 
+
+At this point, we need to decide on a model approach. For this, I would like to compare a random forest with two new approaches: a neural net and a support vector machine. 
+
+#### SVM
+
+A support vector machine tries to find the two closest points between two classes, and treats them as the "support vectors". Then, it draws a line (or hyperplane) between those points, and bisects that vector. The distance between this line and the support vectors is the margin, and we iterate to maximize the margin.
+
+#### Neural net 
+
+We are also deploying a neural net approach for this model. See this great walkthrough by Google for a good review: 
+
+https://developers.google.com/machine-learning/crash-course/multi-class-neural-networks/video-lecture
+
+Now we load the data. 
+
+```{r}
+
+# Load the sample data
+# Alternatively, you can use the supplied orthophotos to generate a new set of training and validation data 
+
+# Your samples layer must have a column for each image in the raster stack, a column for the land cover class that point represents, an X and Y column
+
+# You can create such a sample file using QGIS or another GIS software
+
+# In our case, we will use premade samples 
+samples = read.csv("Data/Samples.csv")
+
+# Split the data frame into 70-30 by class
+trainx = list(0)
+evalx = list(0)
+for (i in 1:8){ # loop through all eight classes
+  cls = samples[samples$class == i,]
+  smpl <- floor(0.70 * nrow(cls))
+  tt <- sample(seq_len(nrow(cls)), size = smpl)
+  trainx[[i]] <- cls[tt,]
+  evalx[[i]] <- cls[-tt,]
+}
+
+# combine them all into training and evaluation data frames
+trn = do.call(rbind, trainx) 
+eva = do.call(rbind, evalx)
+```
+
+
+### Cross validation and training
+
+We will resample our data, to search through all the potential hyperparameter values that we could select for. Note that as Dr. Zabel mentioned during last class, these sort of search functions to optimize for a value of any given constant are very common in machine learning. 
+
+We will use three models to recognize the data in this image:
+
+1. Neural net
+
+2. Random forest 
+
+3. Support Vector Machines 
+
+
+```{r}
+
+# Set up a resampling method in the model training process
+tc <- caret::trainControl(method = "repeatedcv", # repeated cross-validation of the training data
+                   number = 10, # number of folds
+                   repeats = 5, # number of repeats
+                   allowParallel = TRUE, # allow use of multiple cores if specified in training
+                   verboseIter = TRUE) # view the training iterations
+                        
+# Generate a grid search of candidate hyper-parameter values for inclusion into  model training
+
+# These hyper-parameter values are examples. You will need a more complex tuning process to achieve high accuracy
+
+
+# For example, you can play around with the parameters to see which combinations gives you the highest accuracy. 
+
+
+nnet.grid = expand.grid(size = seq(from = 2, to = 10, by = 2), # number of neurons units in the hidden layer 
+                        
+                        decay = seq(from = 0.1, to = 0.5, by = 0.1)) # regularization parameter to avoid over-fitting 
+
+
+
+rf.grid <- expand.grid(mtry=1:20) # number of variables available for splitting at each tree node
+
+svm.grid <- expand.grid(sigma=seq(from = 0.01, to = 0.10, by = 0.02), # controls for non-linearity in the hyperplane
+                        C=seq(from = 2, to = 10, by = 2)) # controls the influence of each support vector
+
+```
+
+### Train the models 
+
+```{r,echo=FALSE}
+## Begin training the models. On the Tufts Virtual Lab VDI, this took 10 minutes. 
+
+# Train the neural network model
+nnet_model <- caret::train(x = trn[,(5:ncol(trn)-1)], y = as.factor(as.integer(as.factor(trn$class))),
+                    method = "nnet", metric="Accuracy", trainControl = tc, tuneGrid = nnet.grid)
+
+# Train the random forest model
+rf_model <- caret::train(x = trn[,(5:ncol(trn)-1)], y = as.factor(as.integer(as.factor(trn$class))),
+                    method = "rf", metric="Accuracy", trainControl = tc, tuneGrid = rf.grid)
+
+# Train the support vector machines model
+svm_model <- caret::train(x = trn[,(5:ncol(trn)-1)], y = as.factor(as.integer(as.factor(trn$class))),
+                    method = "svmRadialSigma", metric="Accuracy", trainControl = tc, tuneGrid = svm.grid)
+
+# The output would look something like: 
+
+# weights:  106
+# initial  value 650.350976 
+# iter  10 value 474.656095
+# iter  20 value 444.395533
+# iter  30 value 427.411484
+# iter  40 value 412.691595
+# iter  50 value 410.686972
+# iter  60 value 408.207140
+# iter  70 value 407.395385
+# iter  80 value 403.401895
+# iter  90 value 395.449762
+# iter 100 value 391.126028
+# final  value 391.126028 
+# stopped after 100 iterations
+# # weights:  204
+# initial  value 671.900468 
+# iter  10 value 482.193555
+# iter  20 value 455.541720
+# iter  30 value 429.919882
+# iter  40 value 411.978747
+# iter  50 value 408.742510
+# iter  60 value 406.514593
+# iter  70 value 406.108814
+# iter  80 value 403.206657
+# iter  90 value 400.398814
+# iter 100 value 399.820400
+# final  value 399.820400
+
+```
+
+>>> BREAKOUT GROUPS: While you are waiting for this model to run, look up the tunegrid inside of the caret::train package. What object does it require as input? Does this change for method nnet versus method rf? Find an example and walk me through it. 
+
+### Predict using this model
+
+After training, we have to predict given our trained model, which normally takes less time then the training. This has lead to the popularity of transfer learning, where you use a pre-trained model.
+
+
+
+```{r}
+## Apply the models to data. This took three minutes. 
+
+# Apply the neural network model to the Sentinel-2 data. 
+nnet_prediction = raster::predict(s2data, model=nnet_model)
+
+# Apply the random forest model to the Sentinel-2 data
+rf_prediction = raster::predict(s2data, model=rf_model)
+
+# Apply the support vector machines model to the Sentinel-2 data
+svm_prediction = raster::predict(s2data, model=svm_model)
+
+# Convert the evaluation data into a spatial object using the X and Y coordinates and extract predicted values
+eva.sp = SpatialPointsDataFrame(coords = cbind(eva$x, eva$y), data = eva, 
+                                proj4string = crs("+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+```
+
+### Validation 
+
+We can validate our data by extracting the points from our evaluation data, and comparing our predicted classes to the actual values. 
+
+After that, we can create a confusion matrix and extract accuracy values. 
+
+```{r}
+## Superimpose evaluation points on the predicted classification and extract the values
+# neural network
+nnet_Eval = raster::extract(nnet_prediction, eva.sp)
+# random forest
+rf_Eval = raster::extract(rf_prediction, eva.sp)
+# support vector machines
+svm_Eval = raster::extract((svm_prediction), eva.sp)
+
+# Create an error matrix for each of the classifiers
+nnet_errorM = confusionMatrix(as.factor(nnet_Eval),as.factor(eva$class)) # nnet is a poor classifier, so it will not capture all the classes
+rf_errorM = confusionMatrix(as.factor(rf_Eval),as.factor(eva$class))
+svm_errorM = confusionMatrix(as.factor(svm_Eval),as.factor(eva$class))
+
+paste0("  Neural net accuracy:  ", round(nnet_errorM$overall[1],2))
+paste0("  Random Forest accuracy:  ", round(rf_errorM$overall[1],2))
+paste0("  SVM accuracy:  ", round(svm_errorM$overall[1],2))
+
+
+```
+### Plot results
+
+With geographic data, it's easiest to view visually. 
+
+```{r}
+# Plot the results next to one another along with the 2018 NMD dataset for comparison
+nmd2018 = raster("Data/NMD_S2Small.tif") # load NMD dataset (Nationella Marktaeckedata, Swedish National Land Cover Dataset)
+crs(nmd2018) <- crs(nnet_prediction) # Correct the coordinate reference system so it matches with the rest
+rstack = stack(nmd2018, nnet_prediction, rf_prediction, svm_prediction) # combine the layers into one stack
+names(rstack) = c("NMD 2018", "Single Layer Neural Network", "Random Forest", "Support Vector Machines") # name the stack
+plot(rstack) # plot it! 
+```
+
+## Summary of what we did
+
+* The same techniques of splitting into testing and training work here
+* Remotely sensed data can be more complex, but quite robust.
+* There are many GIS classes that will train you more in these methods, and this is one of my favorite topics in data science.
+* Neural nets, random forest and SVMs can all be adapted to use as a classifier.
+* In our case, random forest and SVMs worked best, but this may change depending on the problem. 
+* Look at this: https://cran.r-project.org/web/packages/caret/vignettes/caret.html
+
+### Learning more 
+
+For more details on this, check out NEON multiband raster training: https://www.neonscience.org/dc-multiband-rasters-r
+
